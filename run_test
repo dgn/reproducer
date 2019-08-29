@@ -1,0 +1,127 @@
+DIR=$(cd $(dirname $0) ; pwd -P)
+PROJECTS="test1 test2 test3"
+
+function log() {
+  echo "$(date) $@"
+}
+
+function checkNamespaceMember() {
+  local namespace="$1"
+  oc get namespace "$namespace" -o yaml 2>/dev/null | grep -q "maistra.io/member-of"
+}
+
+function checkPods() {
+  local namespace="$1"
+  local count="$2"
+
+  PODS=$(oc get pods -n "$namespace" 2>/dev/null | grep '2/2' | wc -l)
+  if [ "$PODS" -eq ${count} ] ; then
+    return 0
+  fi
+  return 1
+}
+
+function checkNamespaceDelete() {
+  local namespace="$1"
+  return $(oc get namespace "$namespace" 2>/dev/null | wc -l)
+}
+
+function checkGalleyError() {
+  local msg="Failed to watch"
+  local pod=`oc get pods -n cp -o jsonpath='{.items[0].metadata.name}' -l app=galley`
+  oc logs -n cp $pod | tail -n 500 | grep "$msg"
+  return $?
+}
+
+function checkProxyConfig() {
+  local pod=`oc get pods -n cp -o jsonpath='{.items[0].metadata.name}' -l app=istio-ingressgateway`
+  istioctl proxy-config cluster ${pod}.cp -o json | grep test1 >/dev/null && \
+    istioctl proxy-config route ${pod}.cp -o json | grep test1 >/dev/null
+  return $?
+}
+
+function waitFor() {
+  local maxCount="$1"
+
+  shift
+  log "Waiting for $@"
+
+  for count in $(seq 1 ${maxCount}) ; do
+    echo -n "."
+    eval "$@" && echo && return 0
+    sleep 5
+  done
+  echo
+  return 1
+}
+
+
+while : ; do
+
+  log "cleaning up..."
+
+  for PROJECT in ${PROJECTS}; do
+    log "Deleting project ${PROJECT}"
+
+    oc delete project ${PROJECT} >/dev/null 2>&1
+    waitFor 20 checkNamespaceDelete ${PROJECT} || exit
+  done
+
+  for PROJECT in ${PROJECTS}; do
+    log "Creating project ${PROJECT}"
+
+    oc new-project ${PROJECT} >/dev/null 2>&1 || true
+    waitFor 20 checkNamespaceMember ${PROJECT} || exit
+
+    log "Deploying bookinfo into ${PROJECT}"
+
+    oc adm policy add-scc-to-user anyuid -z default -n ${PROJECT} >/dev/null 2>&1
+    oc adm policy add-scc-to-user privileged -z default -n ${PROJECT} >/dev/null 2>&1
+
+    oc adm policy add-scc-to-user anyuid -z bookinfo-productpage -n ${PROJECT} >/dev/null 2>&1
+    oc adm policy add-scc-to-user privileged -z bookinfo-productpage -n ${PROJECT} >/dev/null 2>&1
+
+    oc adm policy add-scc-to-user anyuid -z bookinfo-reviews -n ${PROJECT} >/dev/null 2>&1
+    oc adm policy add-scc-to-user privileged -z bookinfo-reviews -n ${PROJECT} >/dev/null 2>&1
+
+    oc create -n ${PROJECT} -f ${DIR}/bookinfo.yaml >/dev/null 2>&1
+    oc create -n ${PROJECT} -f ${DIR}/bookinfo-gateway.yaml >/dev/null 2>&1
+
+    log "waiting for pods to deploy"
+    waitFor 20 checkPods ${PROJECT} 6 || exit
+  done
+
+  for PROJECT in ${PROJECTS}; do
+    log "Deleting project ${PROJECT}"
+
+    oc delete project ${PROJECT} >/dev/null 2>&1
+    waitFor 20 checkNamespaceDelete ${PROJECT} || exit
+  done
+
+  PROJECT=test1
+
+  log "Recreating project ${PROJECT}"
+
+  oc new-project ${PROJECT} >/dev/null 2>&1 || true
+  waitFor 20 checkNamespaceMember ${PROJECT} || exit
+
+  log "Deploying bookinfo into ${PROJECT}"
+
+  oc adm policy add-scc-to-user anyuid -z default -n ${PROJECT} >/dev/null 2>&1
+  oc adm policy add-scc-to-user privileged -z default -n ${PROJECT} >/dev/null 2>&1
+
+  oc adm policy add-scc-to-user anyuid -z bookinfo-productpage -n ${PROJECT} >/dev/null 2>&1
+  oc adm policy add-scc-to-user privileged -z bookinfo-productpage -n ${PROJECT} >/dev/null 2>&1
+
+  oc adm policy add-scc-to-user anyuid -z bookinfo-reviews -n ${PROJECT} >/dev/null 2>&1
+  oc adm policy add-scc-to-user privileged -z bookinfo-reviews -n ${PROJECT} >/dev/null 2>&1
+
+  oc create -n ${PROJECT} -f ${DIR}/bookinfo.yaml >/dev/null 2>&1
+  oc create -n ${PROJECT} -f ${DIR}/bookinfo-gateway.yaml >/dev/null 2>&1
+
+  log "waiting for pods to deploy"
+  waitFor 20 checkPods ${PROJECT} 6 || exit
+
+  waitFor 10 checkProxyConfig || exit
+
+done
