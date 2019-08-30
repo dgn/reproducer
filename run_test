@@ -35,8 +35,10 @@ function checkGalleyError() {
 
 function checkProxyConfig() {
   local pod=`oc get pods -n cp -o jsonpath='{.items[0].metadata.name}' -l app=istio-ingressgateway`
-  istioctl proxy-config cluster ${pod}.cp -o json | grep test1 >/dev/null && \
-    istioctl proxy-config route ${pod}.cp -o json | grep test1 >/dev/null
+  istioctl proxy-config cluster ${pod}.cp -o json | grep -q test1 && \
+    istioctl proxy-config route ${pod}.cp -o json | grep -q test1 && \
+    ! istioctl proxy-config route ${pod}.cp -o json | grep -q test2 && \
+    ! istioctl proxy-config route ${pod}.cp -o json | grep -q test3
   return $?
 }
 
